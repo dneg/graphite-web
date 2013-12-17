@@ -19,6 +19,7 @@ import math
 import re
 import random
 import time
+import pyes
 
 from graphite.logger import log
 from graphite.render.datalib import fetchData, TimeSeries, timestamp
@@ -31,6 +32,9 @@ if environ.get('READTHEDOCS'):
   format_units = lambda *args, **kwargs: (0,'')
 else:
   from graphite.render.glyph import format_units
+
+# elasticsearch config, could be parameterised?
+esserver = "es1:9200"
 
 NAN = float('NaN')
 INF = float('inf')
@@ -2651,6 +2655,62 @@ def events(requestContext, *tags):
   result_series.pathExpression = name
   return [result_series]
 
+def logstashSearch(requestContext, conn, query, field, resultfacet):
+  start = requestContext["startTime"].isoformat()
+  end = requestContext["endTime"].isoformat()
+
+  boundedquery = "@timestamp:[%s TO %s] AND %s" % (start, end, query)
+  q = pyes.StringQuery(boundedquery).search()
+  q.facet.facets.append(pyes.facets.DateHistogramFacet('date_facet',
+  key_field='@timestamp',
+  value_field=field,
+  interval='minute'))
+  results = conn.search(query=q)
+
+  interval=60
+  start_timestamp = int(time.mktime(requestContext["startTime"].timetuple()))
+  end_timestamp = int(time.mktime(requestContext["endTime"].timetuple()))
+  time_range = (end_timestamp-start_timestamp)/interval
+
+  values=[0]*time_range
+
+  for facet in results.facets.date_facet.entries:
+    appear_time = (facet['time']/1000)
+    values[(appear_time-start_timestamp)/interval] = facet[resultfacet]
+
+  result_series = TimeSeries(query,
+            time.mktime(requestContext["startTime"].timetuple()),
+            time.mktime(requestContext["endTime"].timetuple()),
+            interval, values)
+
+  return result_series
+
+
+def logstashGroup(requestContext, query, group, field="@timestamp", resultfacet="count"):
+  conn = pyes.ES(esserver)
+
+  start = requestContext["startTime"].isoformat()
+  end = requestContext["endTime"].isoformat()
+
+  boundedquery = "@timestamp:[%s TO %s] AND %s" % (start, end, query)
+  q = pyes.StringQuery(boundedquery).search()
+  q.facet.add_term_facet(group)
+  results = conn.search(query=q)
+  resultList = []
+
+  for v in results.facets[group]['terms']:
+    subquery = query + " AND %s:%s" % (group, v['term'])
+    result_series = logstashSearch(requestContext, conn, subquery, field, resultfacet)
+    result_series.pathExpression = v['term']
+    resultList.append(result_series)
+
+  return resultList
+
+def logstash(requestContext, query, field="@timestamp", resultfacet="count"):
+  conn = pyes.ES(esserver)
+  result_series = logstashSearch(requestContext, conn, query, field, resultfacet)
+  return [result_series]
+
 def pieAverage(requestContext, series):
   return safeDiv(safeSum(series),safeLen(series))
 
@@ -2762,6 +2822,8 @@ SeriesFunctions = {
   'threshold' : threshold,
   'transformNull' : transformNull,
   'identity': identity,
+  'logstash': logstash,
+  'logstashGroup': logstashGroup,
 
   # test functions
   'time': timeFunction,
