@@ -20,6 +20,7 @@ import re
 import random
 import time
 import pyes
+import colorsys
 
 from graphite.logger import log
 from graphite.render.datalib import fetchData, TimeSeries, timestamp
@@ -2711,6 +2712,29 @@ def logstash(requestContext, query, field="@timestamp", resultfacet="count"):
   result_series = logstashSearch(requestContext, conn, query, field, resultfacet)
   return [result_series]
 
+def histogram(requestContext, seriesList, compSeries, numMetrics=0):
+  # Filter out values we don't want - below 0
+  regex = re.compile('.*<')
+  newSeries = [s for s in seriesList if not regex.match(s.name)]
+  # Filter last numMetrics
+  newSeries = newSeries[-numMetrics:]
+  # Convert to percentage
+  newSeries = divideSeries(requestContext, newSeries, compSeries)
+  newSeries = scale(requestContext, newSeries, 100) 
+  # Use the metric as the name
+  newSeries = substr(requestContext, newSeries)
+  # Set colour
+  length = len(newSeries)
+  for idx,s in enumerate(newSeries):
+    hue = (1 - (float(idx) / length)) / 3
+    sat = 1.0
+    val = 1.0
+    rgb = colorsys.hsv_to_rgb(hue,sat,val)
+    rgb = tuple([int(255*x) for x in rgb])
+    color = "".join(map(chr, rgb)).encode('hex')
+    s.color = color
+  return newSeries
+
 def pieAverage(requestContext, series):
   return safeDiv(safeSum(series),safeLen(series))
 
@@ -2824,6 +2848,7 @@ SeriesFunctions = {
   'identity': identity,
   'logstash': logstash,
   'logstashGroup': logstashGroup,
+  'histogram': histogram,
 
   # test functions
   'time': timeFunction,
