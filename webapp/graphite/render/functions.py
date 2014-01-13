@@ -2712,10 +2712,19 @@ def logstash(requestContext, query, field="@timestamp", resultfacet="count"):
   result_series = logstashSearch(requestContext, conn, query, field, resultfacet)
   return [result_series]
 
+# Convert statsite histogram bin names into floats for sorting
+def histKeyFunc(timeseries):
+  string = timeseries.name
+  _,label = string.split('bin_')
+  label = label.replace('>','')
+  return float(label)
+
 def histogram(requestContext, seriesList, compSeries, numMetrics=0):
   # Filter out values we don't want - below 0
   regex = re.compile('.*<')
   newSeries = [s for s in seriesList if not regex.match(s.name)]
+  # Sort series
+  newSeries = sorted(newSeries, key=histKeyFunc)
   # Filter last numMetrics
   newSeries = newSeries[-numMetrics:]
   # Convert to percentage
